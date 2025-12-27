@@ -1,0 +1,6 @@
+venv/
+mass_panrom/
+__pycache__/
+*.env
+.DS_Store
+.vscode/
