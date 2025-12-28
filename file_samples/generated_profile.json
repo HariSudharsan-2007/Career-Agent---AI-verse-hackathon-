@@ -1,0 +1,12 @@
+{
+    "name": "Sarah",
+    "college": "IIT Madras",
+    "skills": [
+        "Java",
+        "Spring Boot"
+    ],
+    "certifications": [
+        "AWS"
+    ],
+    "interest": "Cloud Computing"
+}
