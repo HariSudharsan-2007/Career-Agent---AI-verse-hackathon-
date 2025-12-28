@@ -19,6 +19,10 @@ Python 3.12.5 is strictly required to ensure compatibility with dependencies. En
 This project uses Ollama to run Large Language Models locally. Download and install Ollama from the official website. Ensure the Ollama service is running in the background before executing the agent.
 
 ## Model Configuration
+We selected Llama 3.1 8B for this agent because it strikes an optimal balance between local performance and agentic capabilities. According to the Berkeley Function Calling Leaderboard (BFCL), this model achieves a high reliability score (approx. 76.1), outperforming many larger models in tool-use reliability. This is a critical requirement for an agent that effectively interacts with external APIs or parses complex career data.
+
+Additionally, on the Instruction Following Evaluation (IFEval), it demonstrates robust adherence to strict formatting constraints (Score ~0.80). This ensures the agent provides structured, actionable feedback—such as JSON-formatted resume critiques—without hallucinating formats or deviating from system instructions.
+
 Before running the agent, you must pull the required Large Language Model using Ollama. Open your terminal or command prompt and run the following command:
 
 ```bash
