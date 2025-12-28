@@ -1,0 +1,27 @@
+John Doe
+Software Engineer
+Email: john.doe@example.com | Phone: (555) 123-4567
+
+SUMMARY
+Passionate Python Developer with 4 years of experience building web applications and automation scripts. Skilled in backend development using Django and Flask. Looking to transition into AI Engineering.
+
+SKILLS
+- Languages: Python, JavaScript, SQL
+- Frameworks: Django, Flask, React
+- Tools: Docker, Git, AWS, Ollama
+- Databases: PostgreSQL, MongoDB
+
+EXPERIENCE
+Backend Developer | TechSolutions Inc.
+June 2020 - Present
+- Developed scalable APIs for a fintech platform serving 10k+ daily users.
+- Optimized database queries, reducing page load time by 30%.
+- Integrated third-party payment gateways (Stripe, PayPal).
+
+Junior Developer | WebCorp
+Jan 2019 - May 2020
+- Assisted in frontend development using React.js.
+- Wrote unit tests and maintained code documentation.
+
+EDUCATION
+B.Sc. Computer Science | University of Tech | 2015 - 2019

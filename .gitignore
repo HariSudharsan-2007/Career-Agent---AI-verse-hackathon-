@@ -1,5 +1,17 @@
+# Ignore Virtual Environment
 venv/
+env/
+
+# Ignore Python Cache
 __pycache__/
-*.pdf
-*.docx
-.env
+*.pyc
+
+# Ignore Jupyter Checkpoints
+.ipynb_checkpoints/
+
+# Ignore User Data (Memory)
+user_profile.json
+user_memory.json
+
+# (Optional) Ignore the sample files if they contain private info
+# file_samples/
