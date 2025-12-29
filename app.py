@@ -8,88 +8,151 @@ from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 
-# 1. SETUP
+# Configuration
 MODEL_NAME = "llama3.1:8b" 
 MEMORY_FILE = "user_profile.json"
 
-# 2. TOOL: SAVE PROFILE
-def _save_to_profile(key, value):
+# ==========================================
+# 1. SMART MEMORY TOOLS
+# ==========================================
+
+def _save_to_json(key, value):
     if os.path.exists(MEMORY_FILE):
         with open(MEMORY_FILE, 'r') as f:
-            data = json.load(f)
+            try:
+                data = json.load(f)
+            except:
+                data = {}
     else:
         data = {}
+    
+    # Check if data is already there to avoid unnecessary writes
+    if data.get(key) == value:
+        return f"SKIP_UPDATE: Already knew {key} is {value}"
+    
     data[key] = value
     with open(MEMORY_FILE, 'w') as f:
         json.dump(data, f, indent=4)
-    return f"Saved {key}: {value}"
+    return f"SUCCESS: Updated {key} to {value}"
 
 @tool
-def update_user_details(name: str = None, skills: str = None, experience: str = None):
-    """Call this tool to save user details like name, skills, or experience."""
+def update_user_details(name: str = None, skills: str = None, goal: str = None):
+    """
+    Call this tool ONLY when the user explicitly states a fact about themselves.
+    """
     status = []
-    if name: status.append(_save_to_profile('name', name))
-    if skills: status.append(_save_to_profile('skills', skills))
-    if experience: status.append(_save_to_profile('experience', experience))
-    return "\n".join(status) if status else "No details updated."
+    if name: status.append(_save_to_json('name', name))
+    if skills: status.append(_save_to_json('skills', skills))
+    if goal: status.append(_save_to_json('goal', goal))
+    
+    # This return message is for the LLM, not the user.
+    return "\n".join(status) if status else "No changes made."
 
-# 3. AGENT LOGIC
+# ==========================================
+# 2. AGENT ORCHESTRATION
+# ==========================================
+
 class AgentState(TypedDict):
     messages: list[BaseMessage]
 
-llm = ChatOllama(model=MODEL_NAME, temperature=0)
-tools = [update_user_details] # ONLY ONE TOOL FOR NOW
+llm = ChatOllama(model=MODEL_NAME, temperature=0.3)
+tools = [update_user_details]
 llm_with_tools = llm.bind_tools(tools)
 
 def agent_node(state: AgentState):
-    messages = state['messages']
-    # Load memory to show the LLM what it already knows
+    current_messages = state['messages']
+    
+    # Load Memory silently
     profile_text = "{}"
     if os.path.exists(MEMORY_FILE):
         with open(MEMORY_FILE, 'r') as f:
-            profile_text = json.dumps(json.load(f))
-            
-    system_prompt = f"""You are a helpful assistant.
-    CURRENT MEMORY: {profile_text}
-    INSTRUCTION: If the user tells you their name or skills, call `update_user_details` immediately."""
+            try:
+                profile_text = json.dumps(json.load(f))
+            except:
+                pass
+
+    # --- INTELLIGENT SYSTEM PROMPT ---
+    system_prompt = f"""You are a helpful Career Assistant with a persistent memory.
     
-    # Add system prompt to the start
-    messages = [SystemMessage(content=system_prompt)] + messages
-    response = llm_with_tools.invoke(messages)
+    CURRENT SAVED PROFILE: {profile_text}
+    
+    **YOUR GOAL:** Chat naturally with the user while building their profile in the background.
+    
+    **RULES FOR UPDATING MEMORY:**
+    1. **Strict Extraction:** Only call `update_user_details` if the user *explicitly* introduces a fact.
+       - "I am Hari" -> UPDATE Name.
+       - "My skills are Python and Java" -> UPDATE Skills.
+       - "Super super", "Cool", "Okay" -> **DO NOT** update anything. Just chat.
+    
+    2. **Handling Updates:**
+       - If you call the tool, do NOT mention "I updated the JSON" or show technical logs.
+       - Just say something natural like: "Nice to meet you, Hari!" or "Great, Python is a useful skill."
+    
+    3. **Answering Questions:**
+       - If the user asks "What is my name?", read the CURRENT SAVED PROFILE and answer directly. DO NOT call the tool.
+    """
+    
+    messages_with_context = [SystemMessage(content=system_prompt)] + current_messages
+    
+    response = llm_with_tools.invoke(messages_with_context)
     return {"messages": [response]}
 
-# 4. GRAPH BUILD
+# Graph Setup
+tool_node = ToolNode(tools)
+
 workflow = StateGraph(AgentState)
 workflow.add_node("agent", agent_node)
-workflow.add_node("tools", ToolNode(tools))
+workflow.add_node("tools", tool_node)
+
 workflow.set_entry_point("agent")
-workflow.add_conditional_edges("agent", lambda x: "tools" if x['messages'][-1].tool_calls else END)
+
+def should_continue(state: AgentState):
+    last_message = state['messages'][-1]
+    if last_message.tool_calls:
+        return "tools"
+    return END
+
+workflow.add_conditional_edges("agent", should_continue)
 workflow.add_edge("tools", "agent")
 app_graph = workflow.compile()
 
-# 5. UI (CHAINLIT)
+# ==========================================
+# 3. CLEAN UI (CHAINLIT)
+# ==========================================
+
 @cl.on_chat_start
 async def start():
     cl.user_session.set("messages", [])
-    await cl.Message(content="**Step 1 Agent Ready.** Tell me your name!").send()
+    await cl.Message(content="**Assistant Ready.** I'm listening!").send()
 
 @cl.on_message
 async def main(message: cl.Message):
     history = cl.user_session.get("messages")
     history.append(HumanMessage(content=message.content))
+
+    ui_msg = cl.Message(content="")
+    await ui_msg.send()
     
-    msg = cl.Message(content="")
     inputs = {"messages": history}
     
     for event in app_graph.stream(inputs):
         for key, value in event.items():
             if key == "agent":
-                response = value["messages"][-1]
-                if response.content:
-                    await msg.stream_token(response.content)
+                final_response = value["messages"][-1]
+                
+                # If it's a tool call, show a subtle "Thinking" message, not the raw log
+                if final_response.tool_calls:
+                    await ui_msg.stream_token("") # Do nothing, keep it silent or show a small icon
+                
             elif key == "tools":
-                await msg.stream_token("\n*Memory Updated...*\n")
-    
-    history.append(response)
-    cl.user_session.set("messages", history)
-    await msg.update()
+                # The tool has finished. We keep this silent too.
+                # The LLM will speak next and confirm the action naturally.
+                pass
+
+    if final_response:
+        # We only display the FINAL text response from the Agent to the User
+        if final_response.content:
+            history.append(final_response)
+            cl.user_session.set("messages", history)
+            ui_msg.content = final_response.content
+            await ui_msg.update()

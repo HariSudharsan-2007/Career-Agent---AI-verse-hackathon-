@@ -1,6 +1,6 @@
-John Doe
-Software Engineer
-Email: john.doe@example.com | Phone: (555) 123-4567
+Hari Sudharsan
+AI  Engineer
+Email: irah.77@example.com | Phone: (555) 123-4567
 
 SUMMARY
 Passionate Python Developer with 4 years of experience building web applications and automation scripts. Skilled in backend development using Django and Flask. Looking to transition into AI Engineering.
@@ -24,4 +24,4 @@ Jan 2019 - May 2020
 - Wrote unit tests and maintained code documentation.
 
 EDUCATION
-B.Sc. Computer Science | University of Tech | 2015 - 2019
+B.tech AIDS and Medical Engneering | University of Tech | 2015 - 2019
