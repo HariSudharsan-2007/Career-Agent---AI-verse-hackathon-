@@ -1,30 +1,75 @@
 # AI Career Support Agent
 
 ## Overview
-This project focuses on building an intelligent AI Agent designed to support career development. In an increasingly complex job market, candidates often struggle with navigating career paths, optimizing resumes, and preparing for interviews. This agent aims to bridge that gap by providing personalized, data-driven, and conversational support using local Large Language Models (LLMs).
+This is a local AI agent designed to automate career development tasks. It uses local Large Language Models (LLMs) to provide personalized resume analysis, interview preparation, and skill gap identification without sending data to external cloud providers.
 
 ## Problem Statement
-Navigating a career path today is overwhelming. Job seekers and professionals face several challenges, primarily information overload, where sifting through generic advice to find what applies to a specific domain or experience level becomes a bottleneck. Furthermore, traditional tools often lack the personalization required to give tailored feedback on resumes or portfolios. Finally, identifying exactly which skills are missing for a target role is often difficult without expert mentorship, leading to gaps in skill acquisition.
+Job seekers currently face three main technical and practical bottlenecks:
+* **Information Overload:** Filtering generic advice for specific domains is inefficient.
+* **Stateless Interactions:** Traditional tools do not retain user context (experience, skills) across sessions.
+* **Unstructured Feedback:** Candidates rarely receive data-driven, actionable critiques on resumes or portfolios.
 
 ## Project Goal
-To create an autonomous or semi-autonomous AI agent capable of understanding user context, analyzing career data, and providing actionable insights for career growth, interview preparation, and skill acquisition.
+To build an autonomous agent that retains user context and interacts with external data sources to deliver structured, actionable career insights (e.g., JSON-formatted resume feedback, localized job maps).
 
 ## Prerequisites
-To run this project, you must have the following software installed and configured:
 
-### 1. Python Version
-Python 3.12.5 is strictly required to ensure compatibility with dependencies. Ensure this specific version is installed and added to your system path.
+### 1. Python 3.12.5
+**Strictly required.** This specific version is necessary to prevent dependency conflicts with the orchestration libraries.
 
 ### 2. Ollama
-This project uses Ollama to run Large Language Models locally. Download and install Ollama from the official website. Ensure the Ollama service is running in the background before executing the agent.
+Required for running the LLM locally. Ensure the Ollama service is active in the background before execution.
 
 ## Model Configuration
-We selected Llama 3.1 8B for this agent because it strikes an optimal balance between local performance and agentic capabilities. According to the Berkeley Function Calling Leaderboard (BFCL), this model achieves a high reliability score (approx. 76.1), outperforming many larger models in tool-use reliability. This is a critical requirement for an agent that effectively interacts with external APIs or parses complex career data.
+**Selected Model:** `Llama 3.1 8B`
 
-Additionally, on the Instruction Following Evaluation (IFEval), it demonstrates robust adherence to strict formatting constraints (Score ~0.80). This ensures the agent provides structured, actionable feedback—such as JSON-formatted resume critiques—without hallucinating formats or deviating from system instructions.
+We chose this model based on specific performance benchmarks relevant to agentic workflows:
 
-Before running the agent, you must pull the required Large Language Model using Ollama. Open your terminal or command prompt and run the following command:
+* **Tool-Use Reliability (BFCL Score: ~76.1):** It outperforms many larger models in the *Berkeley Function Calling Leaderboard*, ensuring reliable interaction with external APIs (Search, Maps, File Parsers).
+* **Instruction Following (IFEval Score: ~0.80):** It demonstrates strict adherence to formatting rules. This is critical for generating clean, machine-readable outputs (like JSON) without hallucination.
 
+**Setup Command:**
 ```bash
 ollama pull llama3.1:8b
+```
 
+
+## Architecture & Tech Stack
+The agent operates as a **State-Based Orchestrator** using **LangGraph**, strictly separating the system into three layers: Memory (Context), Tools (Capabilities), and Reasoning (LLM).
+
+* **Core Logic:** Python 3.12.5
+* **Orchestration:** LangChain & LangGraph (State machine management)
+* **Memory:** ChromaDB (Vector database for long-term user context)
+* **Interface:** Chainlit (Chat UI)
+* **External Tools:**
+    * **DuckDuckGo:** Live web search for real-time market data.
+    * **Folium & Geopy:** Geospatial data processing and map visualization.
+    * **PyPDF & Python-Docx:** Text extraction from binary document formats.
+
+## Tool Breakdown & Testing
+The project is modularized into standalone components. Each module includes a dedicated Jupyter Notebook for isolated testing before integration.
+
+### 1. Memory Module (`memory_test.ipynb`)
+* **Function:** Ingests raw conversation, extracts entities (Name, Skills, Goals), and stores them in **ChromaDB**.
+* **Test:** Simulates a user introduction -> Verifies if a fresh agent instance can recall the user's name and skills without re-prompting.
+
+### 2. Market Trend Search (`job_trend_search_test.ipynb`)
+* **Function:** Queries **DuckDuckGo** for real-time salary and skill demand data (e.g., "React vs Angular demand").
+* **Test:** Input a role -> Verifies the LLM returns a structured "Market Report" citing salary ranges and demand levels.
+
+### 3. Resume Parser (`file_parser_test.ipynb`)
+* **Function:** Converts `.pdf`, `.docx`, and `.txt` files into raw text strings for LLM analysis.
+* **Test:** Load a sample resume -> Verifies correct extraction of "Key Skills" and "Experience" sections.
+
+### 4. Location Mapper (`location_test.ipynb`)
+* **Function:** Identifies city entities in prompts, fetches coordinates via **Geopy**, and renders an interactive HTML map using **Folium**.
+* **Test:** Input "Jobs in Bangalore" -> Verifies generation of a valid `job_location_map.html` file.
+
+### 5. Opportunities Finder (`opportunities_test.ipynb`)
+* **Function:** A strict filter search that targets specific keywords ("Internship", "Certification") to reduce noise.
+* **Test:** Query "AWS Certification" -> Verifies output contains direct links to valid courses/exams.
+
+## Future Scope
+* **LinkedIn Integration:** Browser automation (Selenium) for direct job applications.
+* **Voice Mode:** Speech-to-Text integration (Whisper) for interactive mock interviews.
+* **Multi-Agent Architecture:** Decoupling the "Resume Critic" and "Market Analyst" into separate, specialized agent loops.
