@@ -5,12 +5,14 @@ import chromadb
 import ollama
 import pypdf
 import docx
-from typing import TypedDict, Literal
+import json
+import datetime
+from typing import TypedDict, Literal, List
 from langchain_ollama import ChatOllama
-from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AIMessage
+from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AIMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_community.tools import DuckDuckGoSearchRun
-from langgraph.graph import StateGraph, END
+from langgraph.graph import StateGraph, END, START
 from langgraph.prebuilt import ToolNode
 
 # Configuration
@@ -18,258 +20,238 @@ MODEL_NAME = "llama3.1:8b"
 DB_PATH = r"C:\Users\hari7\Documents\Anokha Hackthon\ChromaDB"
 
 # Initialize Client
-print(f"Initializing Memory at: {DB_PATH}")
 client = chromadb.PersistentClient(path=DB_PATH)
-
 chat_collection = client.get_or_create_collection(name="user_chat_facts")
 doc_collection = client.get_or_create_collection(name="user_documents")
 
 # ==========================================
-# 1. TOOLS
+# 1. TOOLS DEFINITION
 # ==========================================
 
 search_engine = DuckDuckGoSearchRun()
 
 @tool
 def web_search_tool(query: str):
-    """
-    Use this tool for finding jobs, internships, or researching companies/technologies.
-    """
+    """Finds jobs, internships, or researches companies."""
     try:
         return search_engine.invoke(query)
     except Exception as e:
         return f"Search Error: {e}"
 
-tools = [web_search_tool]
-tool_node = ToolNode(tools)
+# Separate LLM for strict JSON generation
+tool_llm = ChatOllama(model=MODEL_NAME, temperature=0.1)
 
-# ==========================================
-# 2. HELPERS (Memory & Parsing)
-# ==========================================
-
-def parse_file(file_path):
-    text = ""
+@tool
+def generate_roadmap_tool(skill: str):
+    """
+    Generates a structured learning path for a skill.
+    Returns a JSON string.
+    """
+    print(f"Tool: Architecting roadmap for {skill}...")
+    prompt = f"""
+    Create a step-by-step learning roadmap for: {skill}.
+    Strictly output ONLY a JSON array. Format:
+    [{{"topic": "Name", "hours_needed": integer, "description": "Summary"}}]
+    """
     try:
-        if file_path.endswith('.pdf'):
-            reader = pypdf.PdfReader(file_path)
-            for page in reader.pages: text += page.extract_text() or ""
-        elif file_path.endswith('.docx'):
-            doc = docx.Document(file_path)
-            text += "\n".join([p.text for p in doc.paragraphs])
-        elif file_path.endswith('.txt'):
-            with open(file_path, 'r', encoding='utf-8') as f: text = f.read()
-        return text[:15000]
-    except: return ""
+        response = tool_llm.invoke(prompt)
+        clean_json = response.content.replace("```json", "").replace("```", "").strip()
+        return clean_json
+    except Exception as e:
+        return f"Roadmap Error: {e}"
+
+@tool
+def create_schedule_tool(roadmap_json: str, hours_per_day: int = 2):
+    """
+    Maps a roadmap JSON to a calendar.
+    """
+    print(f"Tool: Scheduling ({hours_per_day} hrs/day)...")
+    try:
+        data = json.loads(roadmap_json)
+        schedule = []
+        current_date = datetime.date.today()
+        
+        for module in data:
+            needed = module.get('hours_needed', 2)
+            days = (needed // hours_per_day) + (1 if needed % hours_per_day > 0 else 0)
+            end_date = current_date + datetime.timedelta(days=max(1, days - 1))
+            
+            schedule.append({
+                "topic": module['topic'],
+                "dates": f"{current_date} to {end_date}",
+                "focus": module.get('description', '')
+            })
+            current_date = end_date + datetime.timedelta(days=1)
+            
+        return json.dumps(schedule, indent=2)
+    except Exception as e:
+        return f"Scheduling Error: {e}"
+
+# Unified Tool Set
+all_tools = [web_search_tool, generate_roadmap_tool, create_schedule_tool]
+tool_node = ToolNode(all_tools)
+
+# ==========================================
+# 2. HELPERS
+# ==========================================
 
 def get_combined_memory(text):
     context = ""
     try:
-        # Get Chat History
         res = chat_collection.query(query_texts=[text], n_results=3)
         if res['documents'][0]:
-            context += "FROM CHAT HISTORY:\n" + "\n".join([f"- {d}" for d in res['documents'][0]]) + "\n\n"
-        
-        # Get Doc History
-        res = doc_collection.query(query_texts=[text], n_results=2)
-        if res['documents'][0]:
-            context += "FROM DOCUMENTS:\n" + "\n".join([f"- {d}" for d in res['documents'][0]]) + "\n"
+            context += "FROM CHAT HISTORY:\n" + "\n".join([f"- {d}" for d in res['documents'][0]]) + "\n"
     except: pass
     return context
 
 def auto_save_chat_fact(user_text):
-    prompt = f"""Extract personal career facts from: "{user_text}". 
-    Return ONLY the fact (Name, Skill, Goal). If none, return "NO_FACT"."""
-    try:
-        res = ollama.chat(model=MODEL_NAME, messages=[{'role': 'user', 'content': prompt}])
-        fact = res['message']['content'].strip().replace('"', '')
-        if "NO_FACT" not in fact and len(fact) > 5:
-            chat_collection.add(documents=[fact], ids=[str(uuid.uuid4())])
-            return fact
-    except: pass
+    if "my name" in user_text.lower() or "i know" in user_text.lower():
+        chat_collection.add(documents=[user_text], ids=[str(uuid.uuid4())])
+        return "Memory Updated"
     return None
 
-def process_document(file_text, name):
-    prompt = f"Summarize this document (Resume/Paper) for a Career DB. Content: {file_text}"
-    try:
-        res = ollama.chat(model=MODEL_NAME, messages=[{'role': 'user', 'content': prompt}])
-        summary = res['message']['content'].strip()
-        doc_collection.add(documents=[f"Source: {name}\nSummary: {summary}"], ids=[str(uuid.uuid4())])
-        return summary
-    except: return None
-
 # ==========================================
-# 3. ROUTER & AGENT LOGIC
+# 3. AGENT LOGIC (THE FIX)
 # ==========================================
 
 class AgentState(TypedDict):
     messages: list[BaseMessage]
-    next_step: Literal["general_chat", "web_search", "resume_parser"]
+    next_step: Literal["action_agent", "general_chat"]
 
-# Bind tools for the agent usage
+# Main LLM with ALL tools bound
 llm = ChatOllama(model=MODEL_NAME, temperature=0)
-llm_with_tools = llm.bind_tools(tools)
+llm_with_tools = llm.bind_tools(all_tools)
 
 # --- A. ROUTER NODE ---
 def router_node(state: AgentState):
-    """
-    Decides if we need external tools or just simple chat.
-    """
     messages = state['messages']
     last_msg = messages[-1].content.lower()
     
-    # Simple Keyword Routing Logic (Fast & Cheap)
-    # You can also use an LLM call here for smarter routing if preferred.
+    # If users asks for plans, search, or roadmap -> ACTION AGENT
+    keywords = ["plan", "roadmap", "schedule", "find", "search", "job", "internship"]
+    if any(k in last_msg for k in keywords):
+        return {"next_step": "action_agent"}
     
-    if any(k in last_msg for k in ["find", "search", "job", "internship", "opening", "salary", "news"]):
-        print("--- ROUTER: Decision -> Web Search ---")
-        return {"next_step": "web_search"}
-    
-    # (Resume parsing is handled via UI events, but logic could go here too)
-    
-    print("--- ROUTER: Decision -> General Chat ---")
     return {"next_step": "general_chat"}
 
-# --- B. GENERAL CHAT NODE ---
-def general_chat_node(state: AgentState):
-    messages = state['messages']
-    last_msg = messages[-1]
-    
-    # 1. Background Save (The "Listener")
-    fact = auto_save_chat_fact(last_msg.content)
-    
-    # 2. Retrieve Context
-    memory = get_combined_memory(last_msg.content)
-    
-    prompt = f"""You are a Career Assistant.
-    
-    USER MEMORY:
-    {memory}
-    
-    INSTRUCTIONS:
-    - Answer conversational queries naturally.
-    - If you found a new fact (like "{fact}"), acknowledge it briefly.
-    - Do NOT invent fake jobs.
+# --- B. ACTION AGENT NODE (The Loop Fix) ---
+def action_agent_node(state: AgentState):
     """
+    This node handles ALL tool interactions.
+    It loops: Agent -> Tool -> Agent -> Final Answer.
+    """
+    messages = state['messages']
     
-    final_msgs = [SystemMessage(content=prompt)] + messages
-    response = llm.invoke(final_msgs)
+    # We don't add system prompt every loop, just ensuring context exists
+    # If the last message was a ToolMessage, the Agent will naturally read it and respond.
     
+    if not isinstance(messages[-1], ToolMessage):
+        # Only add prompt if starting a new action, not returning from tool
+        memory = get_combined_memory(messages[-1].content)
+        system_prompt = f"""You are a Career Architect.
+        USER CONTEXT: {memory}
+        
+        TOOLS AVAILABLE:
+        - web_search_tool: For jobs/internships.
+        - generate_roadmap_tool: First step for learning a skill.
+        - create_schedule_tool: Second step (requires roadmap output).
+        """
+        # Note: In LangGraph, it's safer to keep messages clean. 
+        # We prepend system prompt only for the invocation.
+        response = llm_with_tools.invoke([SystemMessage(content=system_prompt)] + messages)
+    else:
+        # Returning from a tool, just continue conversation
+        response = llm_with_tools.invoke(messages)
+        
     return {"messages": [response]}
 
-# --- C. SEARCH AGENT NODE ---
-def search_agent_node(state: AgentState):
+# --- C. GENERAL CHAT NODE ---
+def general_chat_node(state: AgentState):
     messages = state['messages']
-    last_msg = messages[-1]
+    auto_save_chat_fact(messages[-1].content)
     
-    # Retrieve Context to refine search (e.g., user skills)
-    memory = get_combined_memory(last_msg.content)
-    
-    prompt = f"""You are a Job Search Assistant.
-    
-    USER PROFILE:
-    {memory}
-    
-    INSTRUCTIONS:
-    - The user wants to find jobs/info.
-    - Call the `web_search_tool` with a specific query based on their profile.
-    - Example: If they know Python, search "Python Internships".
-    """
-    
-    final_msgs = [SystemMessage(content=prompt)] + messages
-    response = llm_with_tools.invoke(final_msgs)
-    
+    response = llm.invoke(messages)
     return {"messages": [response]}
 
 # --- D. CONDITIONAL EDGES ---
 def route_decision(state: AgentState):
     return state["next_step"]
 
-def continue_tool(state: AgentState):
-    if state['messages'][-1].tool_calls:
+def should_continue(state: AgentState):
+    last_message = state["messages"][-1]
+    # IF the agent called a tool -> Go to 'tools' node
+    if last_message.tool_calls:
         return "tools"
+    # ELSE (Agent is done) -> End
     return END
 
-# --- GRAPH BUILD ---
+# --- GRAPH CONSTRUCTION ---
 workflow = StateGraph(AgentState)
 
 workflow.add_node("router", router_node)
+workflow.add_node("action_agent", action_agent_node)
 workflow.add_node("general_chat", general_chat_node)
-workflow.add_node("web_search", search_agent_node)
 workflow.add_node("tools", tool_node)
 
 workflow.set_entry_point("router")
 
-# Router Logic
+# 1. Router Split
 workflow.add_conditional_edges(
     "router",
     route_decision,
     {
-        "general_chat": "general_chat",
-        "web_search": "web_search"
+        "action_agent": "action_agent",
+        "general_chat": "general_chat"
     }
 )
 
-# Chat ends after general response
-workflow.add_edge("general_chat", END)
+# 2. Action Loop (The Fix: Tools go back to Agent)
+workflow.add_conditional_edges("action_agent", should_continue)
+workflow.add_edge("tools", "action_agent")  # <--- CRITICAL FIX
 
-# Search loop (Agent -> Tool -> Agent -> End)
-workflow.add_conditional_edges("web_search", continue_tool)
-workflow.add_edge("tools", "web_search")
+# 3. Chat End
+workflow.add_edge("general_chat", END)
 
 app_graph = workflow.compile()
 
 # ==========================================
-# 4. CHAINLIT UI
+# 4. UI
 # ==========================================
 
 @cl.on_chat_start
 async def start():
     cl.user_session.set("messages", [])
-    await cl.Message(content="**Smart Career Agent Ready.**\nI can Chat (Memory) or Search (Web).").send()
+    await cl.Message(content="**Career Agent Ready.**\nTry: 'Create a study plan for Docker'").send()
 
 @cl.on_message
 async def main(message: cl.Message):
     history = cl.user_session.get("messages")
-    
-    # 1. FILE UPLOAD HANDLING (Bypasses Router, goes straight to Memory)
-    if message.elements:
-        for element in message.elements:
-            if any(x in element.mime for x in ["pdf", "word", "text"]):
-                await cl.Message(content=f"Analyzing {element.name}...").send()
-                text = parse_file(element.path)
-                summary = process_document(text, element.name)
-                if summary:
-                    await cl.Message(content="**File Analyzed & Memorized.**").send()
-                    history.append(HumanMessage(content=f"User uploaded {element.name}. Summary: {summary}"))
-    
-    # 2. TEXT HANDLING (Goes to Router)
-    else:
-        history.append(HumanMessage(content=message.content))
-
-    ui_msg = cl.Message(content="")
-    await ui_msg.send()
+    history.append(HumanMessage(content=message.content))
     
     inputs = {"messages": history}
-    
+    ui_msg = cl.Message(content="")
+    await ui_msg.send()
+
     for event in app_graph.stream(inputs):
         for key, value in event.items():
             
-            # Show "Thinking" for different nodes
-            if key == "web_search":
-                # Only show if it's actually calling a tool
+            # If Agent is "Thinking" (Generating tool calls)
+            if key == "action_agent":
                 msg = value["messages"][-1]
                 if msg.tool_calls:
-                    await ui_msg.stream_token("\n*🔍 Activated Web Search...*\n")
+                    tool_names = ", ".join([t['name'] for t in msg.tool_calls])
+                    await ui_msg.stream_token(f"\n*⚙️ Calling Tool: {tool_names}...*\n")
                     await ui_msg.update()
-                else:
+                elif msg.content:
+                    # Final Answer from Agent
                     ui_msg.content = msg.content
                     await ui_msg.update()
-            
-            elif key == "general_chat":
-                msg = value["messages"][-1]
-                ui_msg.content = msg.content
-                await ui_msg.update()
 
+            # If Tool has finished
+            elif key == "tools":
+                 await ui_msg.stream_token("\n*✅ Data Processed. Analyzing results...*\n")
+                 await ui_msg.update()
+    
     if ui_msg.content:
         history.append(AIMessage(content=ui_msg.content))
         cl.user_session.set("messages", history)
