@@ -2,9 +2,6 @@ import os
 import uuid
 import chainlit as cl
 import chromadb
-import ollama
-import pypdf
-import docx
 import json
 import datetime
 from typing import TypedDict, Literal, List
@@ -12,7 +9,7 @@ from langchain_ollama import ChatOllama
 from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AIMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_community.tools import DuckDuckGoSearchRun
-from langgraph.graph import StateGraph, END, START
+from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 
 # Configuration
@@ -47,7 +44,6 @@ def generate_roadmap_tool(skill: str):
     Generates a structured learning path for a skill.
     Returns a JSON string.
     """
-    print(f"Tool: Architecting roadmap for {skill}...")
     prompt = f"""
     Create a step-by-step learning roadmap for: {skill}.
     Strictly output ONLY a JSON array. Format:
@@ -65,7 +61,6 @@ def create_schedule_tool(roadmap_json: str, hours_per_day: int = 2):
     """
     Maps a roadmap JSON to a calendar.
     """
-    print(f"Tool: Scheduling ({hours_per_day} hrs/day)...")
     try:
         data = json.loads(roadmap_json)
         schedule = []
@@ -111,14 +106,13 @@ def auto_save_chat_fact(user_text):
     return None
 
 # ==========================================
-# 3. AGENT LOGIC (THE FIX)
+# 3. AGENT LOGIC
 # ==========================================
 
 class AgentState(TypedDict):
     messages: list[BaseMessage]
     next_step: Literal["action_agent", "general_chat"]
 
-# Main LLM with ALL tools bound
 llm = ChatOllama(model=MODEL_NAME, temperature=0)
 llm_with_tools = llm.bind_tools(all_tools)
 
@@ -127,49 +121,48 @@ def router_node(state: AgentState):
     messages = state['messages']
     last_msg = messages[-1].content.lower()
     
-    # If users asks for plans, search, or roadmap -> ACTION AGENT
-    keywords = ["plan", "roadmap", "schedule", "find", "search", "job", "internship"]
+    keywords = ["plan", "roadmap", "schedule", "find", "search", "job", "internship", "learn"]
     if any(k in last_msg for k in keywords):
         return {"next_step": "action_agent"}
-    
     return {"next_step": "general_chat"}
 
-# --- B. ACTION AGENT NODE (The Loop Fix) ---
+# --- B. ACTION AGENT NODE ---
 def action_agent_node(state: AgentState):
-    """
-    This node handles ALL tool interactions.
-    It loops: Agent -> Tool -> Agent -> Final Answer.
-    """
     messages = state['messages']
     
-    # We don't add system prompt every loop, just ensuring context exists
-    # If the last message was a ToolMessage, the Agent will naturally read it and respond.
+    # 1. Fetch context (use the first user message for context stability)
+    user_msg_content = messages[0].content if messages else ""
+    memory = get_combined_memory(user_msg_content)
     
-    if not isinstance(messages[-1], ToolMessage):
-        # Only add prompt if starting a new action, not returning from tool
-        memory = get_combined_memory(messages[-1].content)
-        system_prompt = f"""You are a Career Architect.
-        USER CONTEXT: {memory}
-        
-        TOOLS AVAILABLE:
-        - web_search_tool: For jobs/internships.
-        - generate_roadmap_tool: First step for learning a skill.
-        - create_schedule_tool: Second step (requires roadmap output).
-        """
-        # Note: In LangGraph, it's safer to keep messages clean. 
-        # We prepend system prompt only for the invocation.
-        response = llm_with_tools.invoke([SystemMessage(content=system_prompt)] + messages)
-    else:
-        # Returning from a tool, just continue conversation
-        response = llm_with_tools.invoke(messages)
-        
+    # 2. Define System Prompt
+    system_prompt = f"""You are a Career Architect.
+    USER CONTEXT: {memory}
+    
+    TOOLS:
+    - web_search_tool: For jobs/internships.
+    - generate_roadmap_tool: First step for learning a skill.
+    - create_schedule_tool: Second step (requires roadmap output).
+    
+    INSTRUCTIONS:
+    If the user asks for a plan:
+    1. Call generate_roadmap_tool.
+    2. Call create_schedule_tool with the result.
+    3. Present the schedule clearly in the final response.
+    """
+    
+    # 3. Invoke LLM with System Prompt + History
+    # We reconstruct the list to ensure the System Prompt is ALWAYS present
+    # Filter out previous system messages to avoid duplication
+    chat_history = [m for m in messages if not isinstance(m, SystemMessage)]
+    final_input = [SystemMessage(content=system_prompt)] + chat_history
+    
+    response = llm_with_tools.invoke(final_input)
     return {"messages": [response]}
 
 # --- C. GENERAL CHAT NODE ---
 def general_chat_node(state: AgentState):
     messages = state['messages']
     auto_save_chat_fact(messages[-1].content)
-    
     response = llm.invoke(messages)
     return {"messages": [response]}
 
@@ -179,10 +172,8 @@ def route_decision(state: AgentState):
 
 def should_continue(state: AgentState):
     last_message = state["messages"][-1]
-    # IF the agent called a tool -> Go to 'tools' node
     if last_message.tool_calls:
         return "tools"
-    # ELSE (Agent is done) -> End
     return END
 
 # --- GRAPH CONSTRUCTION ---
@@ -195,33 +186,21 @@ workflow.add_node("tools", tool_node)
 
 workflow.set_entry_point("router")
 
-# 1. Router Split
-workflow.add_conditional_edges(
-    "router",
-    route_decision,
-    {
-        "action_agent": "action_agent",
-        "general_chat": "general_chat"
-    }
-)
-
-# 2. Action Loop (The Fix: Tools go back to Agent)
+workflow.add_conditional_edges("router", route_decision, {"action_agent": "action_agent", "general_chat": "general_chat"})
 workflow.add_conditional_edges("action_agent", should_continue)
-workflow.add_edge("tools", "action_agent")  # <--- CRITICAL FIX
-
-# 3. Chat End
+workflow.add_edge("tools", "action_agent")
 workflow.add_edge("general_chat", END)
 
 app_graph = workflow.compile()
 
 # ==========================================
-# 4. UI
+# 4. UI (ROBUST GUARDRAILS)
 # ==========================================
 
 @cl.on_chat_start
 async def start():
     cl.user_session.set("messages", [])
-    await cl.Message(content="**Career Agent Ready.**\nTry: 'Create a study plan for Docker'").send()
+    await cl.Message(content="Career Agent Ready.").send()
 
 @cl.on_message
 async def main(message: cl.Message):
@@ -229,29 +208,45 @@ async def main(message: cl.Message):
     history.append(HumanMessage(content=message.content))
     
     inputs = {"messages": history}
-    ui_msg = cl.Message(content="")
-    await ui_msg.send()
+    
+    # 1. Status Message (For "Thinking..." updates)
+    status_msg = cl.Message(content="")
+    await status_msg.send()
+    
+    final_response_content = ""
 
     for event in app_graph.stream(inputs):
         for key, value in event.items():
             
-            # If Agent is "Thinking" (Generating tool calls)
+            # AGENT NODE
             if key == "action_agent":
                 msg = value["messages"][-1]
+                
+                # Case A: Tool Call (Thinking)
                 if msg.tool_calls:
                     tool_names = ", ".join([t['name'] for t in msg.tool_calls])
-                    await ui_msg.stream_token(f"\n*⚙️ Calling Tool: {tool_names}...*\n")
-                    await ui_msg.update()
+                    await status_msg.stream_token(f"Architecting Plan ({tool_names})... \n")
+                    await status_msg.update()
+                
+                # Case B: Final Response (Text)
                 elif msg.content:
-                    # Final Answer from Agent
-                    ui_msg.content = msg.content
-                    await ui_msg.update()
+                    final_response_content = msg.content
 
-            # If Tool has finished
+            # TOOL NODE
             elif key == "tools":
-                 await ui_msg.stream_token("\n*✅ Data Processed. Analyzing results...*\n")
-                 await ui_msg.update()
-    
-    if ui_msg.content:
-        history.append(AIMessage(content=ui_msg.content))
+                 await status_msg.stream_token("Data retrieved. Finalizing schedule... \n")
+                 await status_msg.update()
+            
+            # CHAT NODE
+            elif key == "general_chat":
+                msg = value["messages"][-1]
+                final_response_content = msg.content
+
+    # 2. Send Final Response as a FRESH message (Ensures visibility)
+    if final_response_content:
+        # Clear the "Thinking" status to keep chat clean (Optional)
+        # await status_msg.remove() 
+        
+        await cl.Message(content=final_response_content).send()
+        history.append(AIMessage(content=final_response_content))
         cl.user_session.set("messages", history)
