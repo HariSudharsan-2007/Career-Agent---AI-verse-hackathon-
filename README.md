@@ -37,7 +37,7 @@ ollama pull llama3.1:8b
 ## Architecture & Tech Stack
 The agent operates as a **State-Based Orchestrator** using **LangGraph**, strictly separating the system into three layers: Memory (Context), Tools (Capabilities), and Reasoning (LLM).
 
-* **Core Logic:** Python 3.12.5
+* **Logic:** Python 3.12.5
 * **Orchestration:** LangChain & LangGraph (State machine management)
 * **Memory:** ChromaDB (Vector database for long-term user context)
 * **Interface:** Chainlit (Chat UI)
@@ -68,6 +68,14 @@ The project is modularized into standalone components. Each module includes a de
 ### 5. Opportunities Finder (`opportunities_test.ipynb`)
 * **Function:** A strict filter search that targets specific keywords ("Internship", "Certification") to reduce noise.
 * **Test:** Query "AWS Certification" -> Verifies output contains direct links to valid courses/exams.
+
+### 6.Roadmap & Scheduler (`Roadmap_generator_test.ipynb`)
+* **Function:** Generates a structured, step-by-step learning roadmap for a requested skill (e.g., "Docker") and maps it to a personalized calendar schedule based on the user's daily availability.
+* **Test:** Run Roadmap_generator_test.ipynb.
+
+Command: The script simulates a request to learn "Docker" with a commitment of 2 hours per day.
+
+Result: The agent should output a JSON-formatted "FINAL USER PLAN" that lists specific modules (e.g., "Introduction to Docker") with calculated start and end dates (e.g., "2025-12-30 to 2025-12-31").
 
 ## Future Scope
 * **LinkedIn Integration:** Browser automation (Selenium) for direct job applications.
